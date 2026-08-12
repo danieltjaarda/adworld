@@ -10,11 +10,25 @@ import { defineConfig } from "prisma/config";
  * `DATABASE_URL` — so migrations prefer the direct one and fall back to the pooled URL
  * for a plain local Postgres, where the two are the same thing.
  */
-const directUrl =
-  process.env["DIRECT_URL"] ??
-  process.env["DATABASE_URL_UNPOOLED"] ??
-  process.env["POSTGRES_URL_NON_POOLING"] ??
-  process.env["DATABASE_URL"];
+const directUrl = firstSet(
+  "DIRECT_URL",
+  "DATABASE_URL_UNPOOLED",
+  "POSTGRES_URL_NON_POOLING",
+  "DATABASE_URL",
+);
+
+/**
+ * Skips variables that are present but blank. Both .env files and dashboard UIs treat
+ * "not set" as an empty string, and a blank DIRECT_URL must not shadow a working
+ * DATABASE_URL.
+ */
+function firstSet(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
