@@ -51,7 +51,8 @@ const serverSchema = z.object({
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  /// Catches rather than rejects: an unrecognised level is not worth refusing to boot over.
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).catch("info"),
   /// Force demo mode even when live credentials exist (useful for screenshots/tests).
   DEMO_MODE: z
     .string()
@@ -63,8 +64,29 @@ export type ServerEnv = z.infer<typeof serverSchema>;
 
 let cached: ServerEnv | null = null;
 
+/**
+ * Hosting dashboards take environment variables as pasted text, so values arrive with
+ * the quotes from the .env file still wrapped around them and "not set" arrives as an
+ * empty string. Both defeat the schema above: a quoted log level matches no enum member,
+ * and an empty GOOGLE_CLIENT_ID is still truthy enough to switch the app out of demo
+ * mode and start signing requests with nothing.
+ */
+function normalize(source: NodeJS.ProcessEnv): Record<string, string> {
+  const cleaned: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(source)) {
+    if (raw === undefined) continue;
+    const trimmed = raw.trim();
+    const quoted =
+      trimmed.length >= 2 &&
+      (trimmed.startsWith('"') ? trimmed.endsWith('"') : trimmed.startsWith("'") && trimmed.endsWith("'"));
+    const value = quoted ? trimmed.slice(1, -1).trim() : trimmed;
+    if (value) cleaned[key] = value;
+  }
+  return cleaned;
+}
+
 function parseEnv(): ServerEnv {
-  const parsed = serverSchema.safeParse(process.env);
+  const parsed = serverSchema.safeParse(normalize(process.env));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
