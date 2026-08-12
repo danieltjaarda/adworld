@@ -1,0 +1,1189 @@
+// AdLeverage — AI Google Ads optimization SaaS
+//
+// Tenancy model:
+//   User -> OrganizationMember -> Organization -> GoogleAdsAccount -> ads entities
+//
+// Every tenant-owned row carries `organizationId` (denormalized on deep tables such as
+// Keyword and DailyMetric). It costs a little storage but lets every repository query
+// filter on the tenant key directly, which keeps isolation enforceable and cheap.
+//
+// Money is stored the way Google Ads returns it: int64 micros (1_000_000 micros = 1 unit).
+// Conversion to display currency happens in the service layer (see lib/analytics/money.ts).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(uuid()) @db.Uuid
+  email           String    @unique
+  emailVerifiedAt DateTime?
+  name            String?
+  imageUrl        String?
+  passwordHash    String?
+  locale          String    @default("en")
+  timezone        String    @default("UTC")
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships       OrganizationMember[]
+  sessions          Session[]
+  oauthAccounts     OAuthAccount[]
+  tokens            VerificationToken[]
+  notifications     Notification[]
+  chatThreads       ChatThread[]
+  auditLogs         AuditLog[]
+  reviewedRecs      AIRecommendation[]   @relation("RecommendationReviewer")
+  requestedActions  AIAction[]           @relation("ActionRequester")
+  createdConnections GoogleConnection[]  @relation("ConnectionCreator")
+  sentInvitations   Invitation[]         @relation("InvitationInviter")
+
+  @@index([email])
+  @@map("users")
+}
+
+/// Federated identity (Google sign-in). Kept separate from GoogleConnection:
+/// signing in with Google is not the same grant as authorizing the Ads API.
+model OAuthAccount {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @db.Uuid
+  provider          String
+  providerAccountId String
+  email             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+/// Server-side sessions. Only the SHA-256 hash of the session token is stored, so a
+/// database leak cannot be replayed as a valid cookie.
+model Session {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  lastActiveAt   DateTime @default(now())
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+enum VerificationTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model VerificationToken {
+  id        String                @id @default(uuid()) @db.Uuid
+  userId    String                @db.Uuid
+  type      VerificationTokenType
+  tokenHash String                @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime              @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@index([expiresAt])
+  @@map("verification_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Organization {
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String
+  slug             String   @unique
+  currencyCode     String   @default("EUR")
+  timezone         String   @default("Europe/Amsterdam")
+  onboardingStep   String   @default("connect")
+  onboardingDoneAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  members       OrganizationMember[]
+  invitations   Invitation[]
+  connections   GoogleConnection[]
+  adsAccounts   GoogleAdsAccount[]
+  campaigns     Campaign[]
+  adGroups      AdGroup[]
+  keywords      Keyword[]
+  searchTerms   SearchTerm[]
+  ads           Ad[]
+  adVariants    AdVariant[]
+  conversions   Conversion[]
+  dailyMetrics  DailyMetric[]
+  segments      SegmentPerformance[]
+  recommendations AIRecommendation[]
+  actions       AIAction[]
+  anomalies     Anomaly[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  chatThreads   ChatThread[]
+  jobRuns       JobRun[]
+  usage         UsageCounter[]
+  subscription  Subscription?
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  userId         String           @db.Uuid
+  role           OrganizationRole @default(MEMBER)
+  isDefault      Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Invitation {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  email          String
+  role           OrganizationRole @default(MEMBER)
+  tokenHash      String           @unique
+  invitedById    String?          @db.Uuid
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User?        @relation("InvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, email])
+  @@index([email])
+  @@map("invitations")
+}
+
+// ---------------------------------------------------------------------------
+// Google connection & accounts
+// ---------------------------------------------------------------------------
+
+enum ConnectionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+/// One Google identity that granted the Ads API scope to an organization.
+/// Tokens are AES-256-GCM encrypted at rest and never leave the server.
+model GoogleConnection {
+  id                    String           @id @default(uuid()) @db.Uuid
+  organizationId        String           @db.Uuid
+  googleUserId          String
+  email                 String
+  name                  String?
+  pictureUrl            String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String
+  accessTokenExpiresAt  DateTime?
+  scopes                String[]
+  status                ConnectionStatus @default(ACTIVE)
+  lastError             String?
+  lastRefreshedAt       DateTime?
+  createdById           String?          @db.Uuid
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?              @relation("ConnectionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  adsAccounts  GoogleAdsAccount[]
+
+  @@unique([organizationId, googleUserId])
+  @@index([organizationId])
+  @@map("google_connections")
+}
+
+enum SyncStatus {
+  NEVER_SYNCED
+  SYNCING
+  SYNCED
+  ERROR
+}
+
+model GoogleAdsAccount {
+  id                 String     @id @default(uuid()) @db.Uuid
+  organizationId     String     @db.Uuid
+  connectionId       String?    @db.Uuid
+  customerId         String
+  descriptiveName    String
+  currencyCode       String     @default("EUR")
+  timeZone           String     @default("Europe/Amsterdam")
+  isManager          Boolean    @default(false)
+  isTestAccount      Boolean    @default(false)
+  /// Manager account used as login-customer-id when calling the API.
+  loginCustomerId    String?
+  /// Demo accounts are generated locally and are never mixed with live data.
+  isDemo             Boolean    @default(false)
+  isActive           Boolean    @default(true)
+  syncStatus         SyncStatus @default(NEVER_SYNCED)
+  syncError          String?
+  lastSyncedAt       DateTime?
+  lastAnalyzedAt     DateTime?
+  /// Cached dashboard narrative so opening the dashboard never costs an LLM call.
+  summary            Json?
+  summaryAt          DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection      GoogleConnection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  settings        OptimizationSettings?
+  campaigns       Campaign[]
+  adGroups        AdGroup[]
+  keywords        Keyword[]
+  searchTerms     SearchTerm[]
+  ads             Ad[]
+  adVariants      AdVariant[]
+  conversions     Conversion[]
+  dailyMetrics    DailyMetric[]
+  segments        SegmentPerformance[]
+  recommendations AIRecommendation[]
+  actions         AIAction[]
+  anomalies       Anomaly[]
+  notifications   Notification[]
+  chatThreads     ChatThread[]
+  jobRuns         JobRun[]
+
+  @@unique([organizationId, customerId])
+  @@index([organizationId])
+  @@index([connectionId])
+  @@map("google_ads_accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Optimization configuration
+// ---------------------------------------------------------------------------
+
+enum OptimizationMode {
+  SUGGESTIONS
+  APPROVAL
+  AUTOMATIC
+}
+
+model OptimizationSettings {
+  id        String           @id @default(uuid()) @db.Uuid
+  accountId String           @unique @db.Uuid
+  mode      OptimizationMode @default(SUGGESTIONS)
+
+  // Goals
+  targetRoas          Decimal? @db.Decimal(8, 2)
+  targetCpa           Decimal? @db.Decimal(12, 2)
+  maxDailyBudget      Decimal? @db.Decimal(12, 2)
+  minProfitPerConversion Decimal? @db.Decimal(12, 2)
+
+  // Profit model
+  grossMarginPct   Decimal? @db.Decimal(5, 2)
+  cogsPct          Decimal? @db.Decimal(5, 2)
+  leadValue        Decimal? @db.Decimal(12, 2)
+  customerValue    Decimal? @db.Decimal(12, 2)
+  fixedCostPerOrder Decimal? @db.Decimal(12, 2)
+
+  // Safety rails
+  maxDailyBudgetIncreasePct Decimal @default(20) @db.Decimal(5, 2)
+  maxDailyBudgetDecreasePct Decimal @default(20) @db.Decimal(5, 2)
+  maxBidChangePct           Decimal @default(25) @db.Decimal(5, 2)
+  maxActionsPerRun          Int     @default(25)
+
+  // Statistical thresholds — the AI may never act below these
+  minClicksForDecision      Int     @default(30)
+  minImpressionsForDecision Int     @default(500)
+  minSpendForDecision       Decimal @default(50) @db.Decimal(12, 2)
+  minConversionsForScaling  Decimal @default(3) @db.Decimal(8, 2)
+  lookbackDays              Int     @default(30)
+  minConfidence             Decimal @default(0.7) @db.Decimal(3, 2)
+
+  // Which action types may run without human approval (AUTOMATIC mode only)
+  autoNegativeKeywords Boolean @default(false)
+  autoAddKeywords      Boolean @default(false)
+  autoBidChanges       Boolean @default(false)
+  autoBudgetChanges    Boolean @default(false)
+  autoPauseKeywords    Boolean @default(false)
+  autoPauseAds         Boolean @default(false)
+
+  // Notifications
+  notifyOnRecommendation Boolean @default(true)
+  notifyOnAnomaly        Boolean @default(true)
+  notifyOnAutoAction     Boolean @default(true)
+  weeklyReportEmail      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("optimization_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Google Ads entities
+// ---------------------------------------------------------------------------
+
+enum EntityStatus {
+  ENABLED
+  PAUSED
+  REMOVED
+  UNKNOWN
+}
+
+enum MatchType {
+  EXACT
+  PHRASE
+  BROAD
+  UNKNOWN
+}
+
+model Campaign {
+  id                   String       @id @default(uuid()) @db.Uuid
+  organizationId       String       @db.Uuid
+  accountId            String       @db.Uuid
+  campaignId           String
+  name                 String
+  status               EntityStatus @default(UNKNOWN)
+  advertisingChannel   String       @default("SEARCH")
+  biddingStrategyType  String?
+  budgetId             String?
+  budgetName           String?
+  budgetAmountMicros   BigInt       @default(0)
+  budgetIsShared       Boolean      @default(false)
+  budgetDeliveryMethod String?
+  targetRoas           Decimal?     @db.Decimal(8, 4)
+  targetCpaMicros      BigInt?
+  startDate            DateTime?    @db.Date
+  endDate              DateTime?    @db.Date
+  /// Google's own "budget limited" signal, refreshed on each sync.
+  isBudgetLimited      Boolean      @default(false)
+  optimizationScore    Decimal?     @db.Decimal(5, 4)
+  lastSyncedAt         DateTime     @default(now())
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  adGroups     AdGroup[]
+  keywords     Keyword[]
+  searchTerms  SearchTerm[]
+  ads          Ad[]
+  dailyMetrics DailyMetric[]
+
+  @@unique([accountId, campaignId])
+  @@index([organizationId, accountId])
+  @@index([accountId, status])
+  @@map("campaigns")
+}
+
+model AdGroup {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  accountId      String       @db.Uuid
+  campaignRowId  String       @db.Uuid
+  adGroupId      String
+  name           String
+  status         EntityStatus @default(UNKNOWN)
+  type           String?
+  cpcBidMicros   BigInt?
+  targetRoas     Decimal?     @db.Decimal(8, 4)
+  targetCpaMicros BigInt?
+  lastSyncedAt   DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     Campaign         @relation(fields: [campaignRowId], references: [id], onDelete: Cascade)
+  keywords     Keyword[]
+  searchTerms  SearchTerm[]
+  ads          Ad[]
+  adVariants   AdVariant[]
+  dailyMetrics DailyMetric[]
+
+  @@unique([accountId, adGroupId])
+  @@index([organizationId, accountId])
+  @@index([campaignRowId])
+  @@map("ad_groups")
+}
+
+model Keyword {
+  id                String       @id @default(uuid()) @db.Uuid
+  organizationId    String       @db.Uuid
+  accountId         String       @db.Uuid
+  campaignRowId     String       @db.Uuid
+  adGroupRowId      String       @db.Uuid
+  criterionId       String
+  text              String
+  matchType         MatchType    @default(UNKNOWN)
+  status            EntityStatus @default(UNKNOWN)
+  isNegative        Boolean      @default(false)
+  cpcBidMicros      BigInt?
+  effectiveCpcBidMicros BigInt?
+  qualityScore      Int?
+  expectedCtr       String?
+  adRelevance       String?
+  landingPageExp    String?
+  firstPageCpcMicros BigInt?
+  topOfPageCpcMicros BigInt?
+  finalUrl          String?
+  lastSyncedAt      DateTime     @default(now())
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     Campaign         @relation(fields: [campaignRowId], references: [id], onDelete: Cascade)
+  adGroup      AdGroup          @relation(fields: [adGroupRowId], references: [id], onDelete: Cascade)
+  dailyMetrics DailyMetric[]
+
+  @@unique([accountId, adGroupRowId, criterionId])
+  @@index([organizationId, accountId])
+  @@index([accountId, status])
+  @@index([adGroupRowId])
+  @@map("keywords")
+}
+
+enum SearchTermStatus {
+  NONE
+  ADDED
+  EXCLUDED
+  ADDED_EXCLUDED
+  UNKNOWN
+}
+
+enum SearchTermIntent {
+  HIGH_INTENT
+  MEDIUM_INTENT
+  LOW_INTENT
+  IRRELEVANT
+  UNCLASSIFIED
+}
+
+/// Search terms are stored as a rolling aggregate over the sync window rather than
+/// per-day rows: the volume is high and every optimization decision looks at the
+/// aggregate anyway.
+model SearchTerm {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  accountId      String           @db.Uuid
+  campaignRowId  String?          @db.Uuid
+  adGroupRowId   String?          @db.Uuid
+  text           String
+  /// Materialized "<adGroupId|none>:<lowercased text>" — a non-null dedupe key, because
+  /// Postgres treats NULLs as distinct and adGroupRowId is optional.
+  searchTermKey  String
+  matchType      MatchType        @default(UNKNOWN)
+  status         SearchTermStatus @default(NONE)
+  triggeredKeyword String?
+  windowStart    DateTime         @db.Date
+  windowEnd      DateTime         @db.Date
+
+  impressions        BigInt  @default(0)
+  clicks             BigInt  @default(0)
+  costMicros         BigInt  @default(0)
+  conversions        Float   @default(0)
+  conversionValueMicros BigInt @default(0)
+
+  intent          SearchTermIntent @default(UNCLASSIFIED)
+  intentReason    String?
+  classifiedAt    DateTime?
+  classifiedModel String?
+
+  lastSyncedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     Campaign?        @relation(fields: [campaignRowId], references: [id], onDelete: SetNull)
+  adGroup      AdGroup?         @relation(fields: [adGroupRowId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, searchTermKey])
+  @@index([organizationId, accountId])
+  @@index([accountId, intent])
+  @@map("search_terms")
+}
+
+model Ad {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  accountId      String       @db.Uuid
+  campaignRowId  String       @db.Uuid
+  adGroupRowId   String       @db.Uuid
+  adId           String
+  type           String       @default("RESPONSIVE_SEARCH_AD")
+  status         EntityStatus @default(UNKNOWN)
+  adStrength     String?
+  headlines      Json         @default("[]")
+  descriptions   Json         @default("[]")
+  finalUrls      String[]
+  path1          String?
+  path2          String?
+  lastSyncedAt   DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     Campaign         @relation(fields: [campaignRowId], references: [id], onDelete: Cascade)
+  adGroup      AdGroup          @relation(fields: [adGroupRowId], references: [id], onDelete: Cascade)
+  dailyMetrics DailyMetric[]
+  variants     AdVariant[]
+
+  @@unique([accountId, adId])
+  @@index([organizationId, accountId])
+  @@index([adGroupRowId])
+  @@map("ads")
+}
+
+enum AdVariantStatus {
+  DRAFT
+  APPROVED
+  REJECTED
+  PUBLISHED
+  FAILED
+}
+
+/// AI-generated ad copy waiting for review. Never published without passing through
+/// the optimization mode gate.
+model AdVariant {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @db.Uuid
+  accountId      String          @db.Uuid
+  adGroupRowId   String          @db.Uuid
+  sourceAdRowId  String?         @db.Uuid
+  headlines      Json            @default("[]")
+  descriptions   Json            @default("[]")
+  finalUrl       String?
+  path1          String?
+  path2          String?
+  rationale      String?
+  status         AdVariantStatus @default(DRAFT)
+  generatedBy    String?
+  publishedAdId  String?
+  reviewedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  adGroup      AdGroup          @relation(fields: [adGroupRowId], references: [id], onDelete: Cascade)
+  sourceAd     Ad?              @relation(fields: [sourceAdRowId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, accountId])
+  @@index([accountId, status])
+  @@map("ad_variants")
+}
+
+/// A Google Ads conversion action definition plus its rolling totals.
+model Conversion {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @db.Uuid
+  accountId          String   @db.Uuid
+  conversionActionId String
+  name               String
+  category           String?
+  type               String?
+  status             String?
+  countingType       String?
+  includeInConversionsMetric Boolean @default(true)
+  primaryForGoal     Boolean  @default(true)
+  valuePerConversionMicros BigInt?
+  windowStart        DateTime @db.Date
+  windowEnd          DateTime @db.Date
+  conversions        Float    @default(0)
+  conversionValueMicros BigInt @default(0)
+  lastSyncedAt       DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, conversionActionId])
+  @@index([organizationId, accountId])
+  @@map("conversions")
+}
+
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+enum MetricLevel {
+  ACCOUNT
+  CAMPAIGN
+  AD_GROUP
+  KEYWORD
+  AD
+}
+
+/// One row per entity per day. `entityId` is the Google-side id (customer id for
+/// ACCOUNT level) and is never null, which keeps the uniqueness constraint reliable
+/// in Postgres. The nullable row-id columns exist purely for joins.
+model DailyMetric {
+  id             String      @id @default(uuid()) @db.Uuid
+  organizationId String      @db.Uuid
+  accountId      String      @db.Uuid
+  level          MetricLevel
+  entityId       String
+  date           DateTime    @db.Date
+
+  campaignRowId String? @db.Uuid
+  adGroupRowId  String? @db.Uuid
+  keywordRowId  String? @db.Uuid
+  adRowId       String? @db.Uuid
+
+  impressions           BigInt @default(0)
+  clicks                BigInt @default(0)
+  costMicros            BigInt @default(0)
+  conversions           Float  @default(0)
+  conversionValueMicros BigInt @default(0)
+  allConversions        Float  @default(0)
+  allConversionValueMicros BigInt @default(0)
+  interactions          BigInt @default(0)
+  videoViews            BigInt @default(0)
+
+  searchImpressionShare      Decimal? @db.Decimal(6, 4)
+  searchBudgetLostImprShare  Decimal? @db.Decimal(6, 4)
+  searchRankLostImprShare    Decimal? @db.Decimal(6, 4)
+  topImpressionPercentage    Decimal? @db.Decimal(6, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     Campaign?        @relation(fields: [campaignRowId], references: [id], onDelete: Cascade)
+  adGroup      AdGroup?         @relation(fields: [adGroupRowId], references: [id], onDelete: Cascade)
+  keyword      Keyword?         @relation(fields: [keywordRowId], references: [id], onDelete: Cascade)
+  ad           Ad?              @relation(fields: [adRowId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, level, entityId, date])
+  @@index([organizationId, accountId, date])
+  @@index([accountId, level, date])
+  @@index([campaignRowId, date])
+  @@index([keywordRowId, date])
+  @@map("daily_metrics")
+}
+
+enum SegmentType {
+  DEVICE
+  LOCATION
+  HOUR_OF_DAY
+  DAY_OF_WEEK
+  NETWORK
+}
+
+enum SegmentScope {
+  ACCOUNT
+  CAMPAIGN
+}
+
+model SegmentPerformance {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  accountId      String       @db.Uuid
+  scope          SegmentScope @default(ACCOUNT)
+  /// Customer id for ACCOUNT scope, campaign id for CAMPAIGN scope.
+  scopeId        String
+  segmentType    SegmentType
+  segmentKey     String
+  segmentLabel   String
+  date           DateTime     @db.Date
+
+  impressions           BigInt @default(0)
+  clicks                BigInt @default(0)
+  costMicros            BigInt @default(0)
+  conversions           Float  @default(0)
+  conversionValueMicros BigInt @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, scope, scopeId, segmentType, segmentKey, date])
+  @@index([organizationId, accountId, segmentType, date])
+  @@map("segment_performance")
+}
+
+// ---------------------------------------------------------------------------
+// AI layer
+// ---------------------------------------------------------------------------
+
+enum RecommendationType {
+  INCREASE_BUDGET
+  DECREASE_BUDGET
+  PAUSE_KEYWORD
+  ENABLE_KEYWORD
+  INCREASE_KEYWORD_BID
+  DECREASE_KEYWORD_BID
+  ADD_KEYWORD
+  ADD_NEGATIVE_KEYWORD
+  CHANGE_MATCH_TYPE
+  PAUSE_AD
+  CREATE_AD_VARIANT
+  PAUSE_CAMPAIGN
+  ADJUST_TARGET_ROAS
+  ADJUST_TARGET_CPA
+  REVIEW_CONVERSION_TRACKING
+  MONITOR
+}
+
+enum RecommendationTargetType {
+  ACCOUNT
+  CAMPAIGN
+  AD_GROUP
+  KEYWORD
+  SEARCH_TERM
+  AD
+}
+
+enum RecommendationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  IGNORED
+  EXECUTING
+  EXECUTED
+  FAILED
+  EXPIRED
+  SUPERSEDED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RecommendationSource {
+  RULE_ENGINE
+  AI
+  HYBRID
+  /// Requested by a person from a data table rather than proposed by the optimizer.
+  USER
+}
+
+model AIRecommendation {
+  id             String                   @id @default(uuid()) @db.Uuid
+  organizationId String                   @db.Uuid
+  accountId      String                   @db.Uuid
+  batchId        String?                  @db.Uuid
+  type           RecommendationType
+  targetType     RecommendationTargetType
+  /// Google-side id of the target (campaign id, criterion id, search term text, ...).
+  targetId       String
+  targetName     String
+  status         RecommendationStatus     @default(PENDING)
+  source         RecommendationSource     @default(HYBRID)
+  priority       Int                      @default(50)
+  risk           RiskLevel                @default(LOW)
+  confidence     Decimal                  @db.Decimal(3, 2)
+
+  title          String
+  reason         String
+  expectedImpact String
+  /// Validated, executable payload — the only thing the executor reads.
+  payload        Json
+  /// Deterministic metrics that justify the recommendation. The AI never invents these.
+  evidence       Json
+  estimatedMonthlyImpact Decimal? @db.Decimal(12, 2)
+
+  model          String?
+  /// Stable hash of (type,target,period-bucket) used to keep runs idempotent.
+  dedupeKey      String
+  expiresAt      DateTime?
+  reviewedById   String?   @db.Uuid
+  reviewedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  reviewedBy   User?            @relation("RecommendationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  actions      AIAction[]
+
+  @@unique([accountId, dedupeKey])
+  @@index([organizationId, accountId, status])
+  @@index([accountId, status, priority])
+  @@index([createdAt])
+  @@map("ai_recommendations")
+}
+
+enum ActionStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  ROLLED_BACK
+}
+
+enum ActorType {
+  USER
+  AI
+  SYSTEM
+}
+
+model AIAction {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @db.Uuid
+  accountId        String       @db.Uuid
+  recommendationId String?      @db.Uuid
+  type             RecommendationType
+  targetType       RecommendationTargetType
+  targetId         String
+  targetName       String
+  status           ActionStatus @default(QUEUED)
+  actorType        ActorType    @default(AI)
+  requestedById    String?      @db.Uuid
+  payload          Json
+  /// Snapshot of the entity before the mutation, used for one-click rollback.
+  previousState    Json?
+  result           Json?
+  errorMessage     String?
+  attempts         Int          @default(0)
+  /// Guarantees a mutation is applied at most once even if a job retries.
+  idempotencyKey   String       @unique
+  rollbackOfId     String?      @db.Uuid
+  executedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account        GoogleAdsAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  recommendation AIRecommendation? @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
+  requestedBy    User?             @relation("ActionRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  rollbackOf     AIAction?         @relation("ActionRollback", fields: [rollbackOfId], references: [id], onDelete: SetNull)
+  rollbacks      AIAction[]        @relation("ActionRollback")
+  logs           AIActionLog[]
+
+  @@index([organizationId, accountId, status])
+  @@index([accountId, createdAt])
+  @@map("ai_actions")
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+model AIActionLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actionId  String   @db.Uuid
+  level     LogLevel @default(INFO)
+  message   String
+  data      Json?
+  createdAt DateTime @default(now())
+
+  action AIAction @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+  @@index([actionId, createdAt])
+  @@map("ai_action_logs")
+}
+
+enum AnomalySeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AnomalyStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model Anomaly {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @db.Uuid
+  accountId      String          @db.Uuid
+  type           String
+  metric         String
+  entityType     RecommendationTargetType @default(ACCOUNT)
+  entityId       String
+  entityName     String
+  severity       AnomalySeverity @default(WARNING)
+  status         AnomalyStatus   @default(OPEN)
+  title          String
+  description    String
+  currentValue   Decimal         @db.Decimal(16, 4)
+  baselineValue  Decimal         @db.Decimal(16, 4)
+  changePct      Decimal         @db.Decimal(10, 4)
+  periodStart    DateTime        @db.Date
+  periodEnd      DateTime        @db.Date
+  details        Json?
+  dedupeKey      String
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, dedupeKey])
+  @@index([organizationId, accountId, status])
+  @@map("anomalies")
+}
+
+// ---------------------------------------------------------------------------
+// AI chat
+// ---------------------------------------------------------------------------
+
+model ChatThread {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  accountId      String   @db.Uuid
+  userId         String   @db.Uuid
+  title          String   @default("New conversation")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages     ChatMessage[]
+
+  @@index([organizationId, userId, updatedAt])
+  @@map("chat_threads")
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  TOOL
+  SYSTEM
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid()) @db.Uuid
+  threadId  String   @db.Uuid
+  role      ChatRole
+  content   String
+  toolCalls Json?
+  toolName  String?
+  tokensIn  Int?
+  tokensOut Int?
+  createdAt DateTime @default(now())
+
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+  @@map("chat_messages")
+}
+
+// ---------------------------------------------------------------------------
+// Platform: notifications, audit, billing, jobs
+// ---------------------------------------------------------------------------
+
+enum NotificationType {
+  RECOMMENDATION
+  ANOMALY
+  SPEND_SPIKE
+  ROAS_DROP
+  TRACKING_ISSUE
+  OPTIMIZATION_COMPLETED
+  OPTIMIZATION_FAILED
+  SYNC_FAILED
+  BILLING
+  SYSTEM
+}
+
+model Notification {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  accountId      String?          @db.Uuid
+  /// Null means the notification targets every member of the organization.
+  userId         String?          @db.Uuid
+  type           NotificationType
+  severity       AnomalySeverity  @default(INFO)
+  title          String
+  body           String
+  href           String?
+  data           Json?
+  dedupeKey      String
+  readAt         DateTime?
+  emailSentAt    DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user         User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, dedupeKey])
+  @@index([organizationId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  actorType      ActorType @default(USER)
+  actorUserId    String?   @db.Uuid
+  actorLabel     String
+  action         String
+  entityType     String
+  entityId       String?
+  summary        String
+  before         Json?
+  after          Json?
+  metadata       Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, entityType, entityId])
+  @@map("audit_logs")
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  GROWTH
+  AGENCY
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+  UNPAID
+  PAUSED
+}
+
+model Subscription {
+  id                   String             @id @default(uuid()) @db.Uuid
+  organizationId       String             @unique @db.Uuid
+  plan                 PlanTier           @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  canceledAt           DateTime?
+  trialEndsAt          DateTime?
+  seats                Int                @default(1)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+/// Monthly usage counters for plan limits (AI runs, synced accounts, ...).
+model UsageCounter {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  period         String
+  metric         String
+  value          Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, period, metric])
+  @@map("usage_counters")
+}
+
+enum JobType {
+  SYNC_ACCOUNT
+  ANALYZE_ACCOUNT
+  DETECT_ANOMALIES
+  EXECUTE_ACTIONS
+  SEND_DIGEST
+}
+
+enum JobStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+/// One row per (job, scope, run key). The unique key makes cron runs idempotent:
+/// a retry within the same bucket finds the existing row instead of doing the work twice.
+model JobRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String?   @db.Uuid
+  accountId      String?   @db.Uuid
+  type           JobType
+  status         JobStatus @default(RUNNING)
+  runKey         String    @unique
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  durationMs     Int?
+  stats          Json?
+  error          String?
+
+  organization Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      GoogleAdsAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([type, startedAt])
+  @@index([accountId, type, startedAt])
+  @@map("job_runs")
+}
+
+/// Deduplication ledger for inbound provider webhooks. Stripe retries and can deliver
+/// the same event more than once; the unique constraint makes a replay a no-op.
+model WebhookEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  provider   String
+  eventId    String
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@index([receivedAt])
+  @@map("webhook_events")
+}

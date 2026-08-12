@@ -1,0 +1,261 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Design system
+  -------------
+  A restrained, Stripe-like palette: white surfaces on a light gray canvas, hairline
+  borders, one blue for actions, and semantic colors reserved for metric deltas.
+  Everything is defined once here so components never hard-code a color.
+*/
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-heading: var(--font-sans);
+
+  --color-canvas: var(--canvas);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --shadow-card: 0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.04);
+  --shadow-raised: 0 1px 2px 0 rgb(16 24 40 / 0.06), 0 4px 12px -2px rgb(16 24 40 / 0.08);
+  --shadow-overlay: 0 12px 32px -8px rgb(16 24 40 / 0.16), 0 4px 8px -2px rgb(16 24 40 / 0.06);
+}
+
+:root {
+  --radius: 0.5rem;
+
+  --background: #ffffff;
+  --foreground: #1a1f36;
+  --canvas: #f6f8fa;
+
+  --card: #ffffff;
+  --card-foreground: #1a1f36;
+  --popover: #ffffff;
+  --popover-foreground: #1a1f36;
+
+  --primary: #635bff;
+  --primary-foreground: #ffffff;
+
+  --secondary: #f2f4f7;
+  --secondary-foreground: #29304a;
+
+  --muted: #f6f8fa;
+  --muted-foreground: #6a7383;
+
+  --accent: #f2f4f7;
+  --accent-foreground: #1a1f36;
+
+  --destructive: #df1b41;
+
+  --border: #e3e8ee;
+  --input: #dfe3eb;
+  --ring: #635bff;
+
+  --positive: #0e8a5f;
+  --positive-soft: #e6f6ef;
+  --negative: #cd1e40;
+  --negative-soft: #fdecef;
+  --warning: #b25000;
+  --warning-soft: #fdf2e3;
+  --info: #3f4ba8;
+  --info-soft: #eef0fb;
+
+  --chart-1: #635bff;
+  --chart-2: #0e8a5f;
+  --chart-3: #f2a93b;
+  --chart-4: #4f9ff2;
+  --chart-5: #8a63d2;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1a1f36;
+  --sidebar-primary: #635bff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f2f4f7;
+  --sidebar-accent-foreground: #1a1f36;
+  --sidebar-border: #e3e8ee;
+  --sidebar-ring: #635bff;
+}
+
+.dark {
+  --background: #0c111d;
+  --foreground: #f4f6fa;
+  --canvas: #080c14;
+
+  --card: #111827;
+  --card-foreground: #f4f6fa;
+  --popover: #111827;
+  --popover-foreground: #f4f6fa;
+
+  --primary: #7a73ff;
+  --primary-foreground: #0c111d;
+
+  --secondary: #1c2536;
+  --secondary-foreground: #f4f6fa;
+
+  --muted: #161d2b;
+  --muted-foreground: #98a2b3;
+
+  --accent: #1c2536;
+  --accent-foreground: #f4f6fa;
+
+  --destructive: #f97066;
+
+  --border: #1f2937;
+  --input: #263041;
+  --ring: #7a73ff;
+
+  --positive: #3ccb9a;
+  --positive-soft: #10291f;
+  --negative: #f97066;
+  --negative-soft: #2c1116;
+  --warning: #f0a35e;
+  --warning-soft: #2a1c0c;
+  --info: #8f9bff;
+  --info-soft: #151a33;
+
+  --sidebar: #0c111d;
+  --sidebar-foreground: #f4f6fa;
+  --sidebar-primary: #7a73ff;
+  --sidebar-primary-foreground: #0c111d;
+  --sidebar-accent: #1c2536;
+  --sidebar-accent-foreground: #f4f6fa;
+  --sidebar-border: #1f2937;
+  --sidebar-ring: #7a73ff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/40;
+  }
+
+  html {
+    @apply font-sans antialiased;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Metrics stay aligned when values change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply tracking-[-0.011em];
+  }
+}
+
+@layer components {
+  /* Dashboard section heading — used by every page header. */
+  .page-title {
+    @apply text-[19px] leading-7 font-semibold tracking-[-0.015em] text-foreground;
+  }
+
+  .page-subtitle {
+    @apply text-[13px] leading-5 text-muted-foreground;
+  }
+
+  /* Compact Stripe-style data table. */
+  .data-table {
+    @apply w-full text-[13px];
+  }
+
+  .data-table thead th {
+    @apply h-9 px-3 text-left align-middle text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground;
+  }
+
+  .data-table tbody td {
+    @apply h-11 border-t border-border px-3 align-middle;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-muted/60;
+  }
+}
+
+/* Scrollbars: visible enough to grab, quiet enough to ignore. */
+@media (pointer: fine) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d3d9e3 transparent;
+  }
+}
+
+/* Printing exists for one screen: the report. Strip the application chrome around it. */
+@media print {
+  [data-app-chrome] {
+    display: none !important;
+  }
+
+  [data-app-main] {
+    padding: 0 !important;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .shadow-card {
+    box-shadow: none !important;
+  }
+}
