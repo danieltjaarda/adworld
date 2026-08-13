@@ -5,23 +5,24 @@
  * details, and a privacy policy that names a different entity than the invoice is worse
  * than no policy at all. Fill these in once; the legal pages read from here.
  *
- * TODO(daniel): replace the bracketed placeholders before submitting for verification.
+ * TODO(daniel): the postcode and city are still placeholders, and Google emails the
+ * contact address during verification — point it somewhere that is actually read.
  */
 export const COMPANY = {
   /** Trading name of the product. */
   product: "AdLeverage",
   /** Registered legal entity that operates the product. */
-  legalName: "[Legal entity name, e.g. Example B.V.]",
+  legalName: "Noord Trading B.V.",
   /** Registered address, as it appears in the Chamber of Commerce register. */
-  address: "[Street and number], [Postcode] [City], The Netherlands",
+  address: "Brandemeer 4a, [Postcode] [City], The Netherlands",
   /** Dutch Chamber of Commerce number. */
-  kvk: "[KvK number]",
+  kvk: "96813091",
   /** VAT identification number. */
-  vat: "[VAT number]",
+  vat: "NL867772979B01",
   /** Reaches a human for support and contract questions. */
-  contactEmail: "[support@yourdomain.com]",
+  contactEmail: "daniel@deskna.nl",
   /** Reaches whoever handles data-protection requests. */
-  privacyEmail: "[privacy@yourdomain.com]",
+  privacyEmail: "daniel@deskna.nl",
   /** Public URL of the deployment these terms apply to. */
   siteUrl: "https://adworld-p4r3.vercel.app",
 } as const;
