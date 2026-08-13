@@ -3,7 +3,6 @@ import Link from "next/link";
 import { ArrowRight, ShieldCheck } from "lucide-react";
 
 import { ReanalyzeButton } from "@/app/(dashboard)/recommendations/reanalyze-button";
-import { typeLabel } from "@/components/ai/recommendation-card";
 import { MetricCard, MetricGrid } from "@/components/dashboard/metric-card";
 import { PageHeader, SectionHeader } from "@/components/dashboard/page-header";
 import { StatusBadge } from "@/components/dashboard/status-badge";
@@ -14,6 +13,7 @@ import {
   formatCurrency,
   formatNumber,
   formatRelativeTime,
+  typeLabel,
 } from "@/lib/analytics/format";
 import { loadPageContext, type SearchParams } from "@/lib/dashboard/page-context";
 import { prisma } from "@/lib/db/prisma";

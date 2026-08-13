@@ -164,6 +164,11 @@ export function formatCustomerId(customerId: string): string {
   return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
+/** ADD_NEGATIVE_KEYWORD -> "Add negative keyword". Server and client both label with it. */
+export function typeLabel(type: string): string {
+  return type.charAt(0) + type.slice(1).toLowerCase().replace(/_/g, " ");
+}
+
 export function formatCompactDate(key: string): string {
   const [year, month, day] = key.split("-").map(Number);
   if (!year || !month || !day) return key;

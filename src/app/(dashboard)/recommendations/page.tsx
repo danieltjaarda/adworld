@@ -6,7 +6,6 @@ import { ReanalyzeButton } from "@/app/(dashboard)/recommendations/reanalyze-but
 import { RecommendationList } from "@/app/(dashboard)/recommendations/recommendation-list";
 import { UndoButton } from "@/app/(dashboard)/recommendations/undo-button";
 import type { RecommendationView } from "@/components/ai/recommendation-card";
-import { typeLabel } from "@/components/ai/recommendation-card";
 import { MetricCard, MetricGrid } from "@/components/dashboard/metric-card";
 import { PageHeader, SectionHeader } from "@/components/dashboard/page-header";
 import { StatusBadge } from "@/components/dashboard/status-badge";
@@ -19,6 +18,7 @@ import {
   formatPercent,
   formatRatio,
   formatRelativeTime,
+  typeLabel,
 } from "@/lib/analytics/format";
 import { can } from "@/lib/auth/rbac";
 import { loadPageContext, type SearchParams } from "@/lib/dashboard/page-context";

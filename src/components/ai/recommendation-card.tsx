@@ -12,6 +12,7 @@ import {
 import { RiskBadge, StatusBadge, type Tone } from "@/components/dashboard/status-badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { typeLabel } from "@/lib/analytics/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -52,10 +53,6 @@ const TYPE_TONE: Record<string, Tone> = {
   PAUSE_CAMPAIGN: "negative",
   CREATE_AD_VARIANT: "info",
 };
-
-export function typeLabel(type: string): string {
-  return type.charAt(0) + type.slice(1).toLowerCase().replace(/_/g, " ");
-}
 
 export function RecommendationCard({
   recommendation,
