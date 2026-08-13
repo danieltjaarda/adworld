@@ -20,8 +20,14 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           <div className="w-full max-w-[380px]">{children}</div>
         </main>
 
-        <footer className="text-[12px] text-muted-foreground">
+        <footer className="flex flex-wrap items-center gap-4 text-[12px] text-muted-foreground">
           <span>© {new Date().getFullYear()} AdLeverage</span>
+          <Link href="/privacy" className="hover:text-foreground">
+            Privacy
+          </Link>
+          <Link href="/terms" className="hover:text-foreground">
+            Terms
+          </Link>
         </footer>
       </div>
 

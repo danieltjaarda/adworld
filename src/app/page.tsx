@@ -244,9 +244,18 @@ export default async function LandingPage() {
       <footer className="border-t border-border">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <Logo />
-          <p className="text-[12px] text-muted-foreground">
-            © {new Date().getFullYear()} AdLeverage. Not affiliated with Google.
-          </p>
+          <div className="flex flex-col gap-2 text-[12px] text-muted-foreground sm:flex-row sm:items-center sm:gap-5">
+            {/* Google's OAuth verification requires the privacy policy to be reachable from here. */}
+            <nav className="flex items-center gap-4">
+              <Link href="/privacy" className="hover:text-foreground">
+                Privacy
+              </Link>
+              <Link href="/terms" className="hover:text-foreground">
+                Terms
+              </Link>
+            </nav>
+            <p>© {new Date().getFullYear()} AdLeverage. Not affiliated with Google.</p>
+          </div>
         </div>
       </footer>
     </div>
